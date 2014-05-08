@@ -1,9 +1,12 @@
 import tornado.ioloop
+from tornado import gen
 import tornado.web
 import pickle, os, random, time, json
 
 storage = {}
 NUM_OF_PEERS = 40
+EXPIRE_INTERVAL = 10*60
+EXPIRE_THRESHOLD = 20*60
 
 model_path = os.path.join('logistic_regression', 'model.pkl')
 with open(model_path, 'rb') as input_file:
@@ -52,12 +55,32 @@ class DefaultHandler(tornado.web.RequestHandler):
 		self.write("hello world")
 
 
+@gen.engine
+def handle_peer_expiration():
+	while True:
+		print("start evition")
+		yield gen.Task(tornado.ioloop.IOLoop.instance().add_timeout, time.time() + EXPIRE_INTERVAL)
+		timestamp = time.time()
+		keys = storage.keys()
+		deadlist = []
+		for key in keys:
+			if timestamp - storage[key].timestamp > EXPIRE_THRESHOLD:
+				deadlist.append(key)
+
+		for key in deadlist:
+			del storage[key]
+			print("delete key:"+key)
+
+		print("end evition")
+
 application = tornado.web.Application([
     (r"/heartbeat", HeartBeatHandler),
     (r"/loadmodel", ModelHandler),
     (r"/", DefaultHandler),
 ])
 
+
 if __name__ == "__main__":
     application.listen(8888)
+    tornado.ioloop.IOLoop.instance().add_callback(handle_peer_expiration)
     tornado.ioloop.IOLoop.instance().start()
