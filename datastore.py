@@ -8,7 +8,7 @@ SELECT_ALL_CMD = "SELECT * FROM Peers;"
 INSERT_CMD = "INSERT INTO Peers (Name, IP, Port, Rating) VALUES(?, ?, ?, ?)"
 DELETE_ALL_CMD = "DELETE FROM Peers;"
 DELETE_CMD = "DELETE FROM Peers WHERE Id = {};"
-GET_HIGHEST_RATING = "SELECT * FROM Peers ORDER BY Rating LIMIT {};"
+GET_HIGHEST_RATING = "SELECT * FROM Peers ORDER BY Rating DESC LIMIT {};"
 
 class DataStore:
 	def __init__(self):

@@ -5,9 +5,8 @@ from logistic_regression import D2LogisticRegression
 from mlengine import MLEngine
 from socket import *
 import threading
-import json
-import zmq
-import sys
+import json, zmq, sys
+import pickle, http.client, urllib.parse
 
 Local_URL = "tcp://127.0.0.1:5556"
 Local_URL_FORMAT = "tcp://{}:{}"
@@ -16,6 +15,47 @@ REMOTE_HANDLER_URL_FORMAT = "tcp://{}:{}"
 TIME_BOUND = 1000
 RETRY_TIMES = 5
 
+class ModelLoader:
+	def __init__(self, baseURL):
+		self.url = baseURL
+
+	def load(self):
+		conn = http.client.HTTPConnection(self.url)
+		conn.request("GET", "/loadmoel")
+		res = conn.getresponse()
+		status = False
+		if res.status == 200:
+			binary_model = res.read()
+			model = pickle.loads(binary_model)
+			status = True
+		conn.close()
+		return {"status": status, "model": model}
+
+class HeartBeat:
+	def __init__(self, baseURL):
+		self.url = baseURL
+		self.period = 1;
+		self.thread = threading.Timer(self.period, self.report)
+		self.thread.daemon = True
+
+	def report(self):
+		print("start report")
+		params = urllib.parse.urlencode({'ip': '127.0.0.1', 'port': '8100'})
+		headers = {"Content-type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
+		conn = http.client.HTTPConnection(self.url)
+		conn.request("POST", "/heartbeat", params, headers)
+
+		res = conn.getresponse()
+		conn.close()
+		print("end report:"+params)
+		self.thread = threading.Timer(self.period, self.report)
+		self.thread.start()
+
+	def start(self):
+		self.thread.start()
+
+	def stop(self):
+		self.thread.cancel()
 
 
 class Task:
@@ -50,7 +90,6 @@ class TaskHandler:
 		self.socket_table = {}
 		self.poller = zmq.Poller()
 		self.initialize_connections()
-
 
 		self.task_sema = threading.Semaphore(0)
 		self.task_mutex = threading.Lock()
@@ -166,15 +205,18 @@ class Engine:
 		self.remote_ip = remote_ip
 		self.remote_port = remote_port
 
+		self.heart_beater = HeartBeat("127.0.0.1:8888")
 		self.task_handler = TaskHandler()
 		self.client_thread = threading.Thread(target=self.start_task_creator, args = ())
 		self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
+		self.heart_beater.start()
 		self.client_thread.start()
 		self.remote_thread.start()
 
 		self.client_thread.join()
 		self.remote_thread.join()
 		self.task_handler.join()
+		self.heart_beater.stop()
 
 
 	def start_task_creator(self):
