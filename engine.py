@@ -1,6 +1,9 @@
 from datastore import DataStore
 from mode import PeerNode
 from random import randint
+from logistic_regression import D2LogisticRegression
+from mlengine import MLEngine
+from socket import *
 import json
 import threading
 import zmq
@@ -14,21 +17,6 @@ TIME_BOUND = 1000
 RETRY_TIMES = 5
 
 
-
-class Recommend:
-	def __init__(self):
-		self.model = self.receive_model()
-		print("recommend init")
-
-	def suggest(self, request):
-		result = []
-		for i in range(5):
-			result.append(randint(0,100))
-		return result
-
-	def receive_model(self):
-		print("revoce model")
-		return None
 
 
 class TaskHandler:
@@ -103,32 +91,37 @@ class TaskHandler:
 class Engine:
 	def __init__(self, local_ip, local_port, remote_ip, remote_port):
 		self.task_handler = TaskHandler()
-		self.recommender = Recommend()
+		self.recommender = MLEngine(D2LogisticRegression())
 		self.local_ip = local_ip
 		self.local_port = local_port
 		self.remote_ip = remote_ip
 		self.remote_port = remote_port
 
 		self.client_thread = threading.Thread(target=self.start_task_creator, args = ())
-		self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
+		#self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
 		self.client_thread.start()
-		self.remote_thread.start()
+		#self.remote_thread.start()
 		self.client_thread.join()
-		self.remote_thread.join()
+		#self.remote_thread.join()
 
 
 	def start_task_creator(self):
-		url = Local_URL_FORMAT.format(self.local_ip, self.local_port)
-		context = zmq.Context()
-		socket = context.socket(zmq.PAIR)
-		socket.bind(url)
+		address = (self.local_ip, int(self.local_port))
+		server_socket = socket(AF_INET, SOCK_DGRAM)
+		server_socket.bind(address)
 		while True:
-			msg = socket.recv() 
-			msg = msg.decode("utf-8")
-			request = json.loads(msg);
-			responses = self.task_handler.send_request(request)
-			result = self.process_responses(responses)
-			socket.send_string(json.dumps(result))
+			content, addr = server_socket.recvfrom(2048)
+			task = json.loads(content.decode("utf-8"));
+			#responses = self.task_handler.send_request(request)
+			recommendations = self.recommender.recommend(task["radiant"], task["dire"]);
+
+			result = self.process_responses(recommendations)
+			json_str = json.dumps(result);
+			server_socket.sendto(json_str.encode("utf-8"), addr)
+
+			#server_socket.sendto("hello c#".encode("utf-8"), addr)
+
+
 
 	def process_responses(self,responses):
 		return responses
