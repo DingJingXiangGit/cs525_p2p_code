@@ -28,7 +28,7 @@ class D2LogisticRegression:
             prob = self.score(query) #self.model.predict_proba(query)[0][1]
             prob_candidate_pairs.append((prob, candidate))
         #prob_candidate_pairs = sorted(prob_candidate_pairs, reverse=True)[0:5 - len(my_team)]
-        prob_candidate_pairs = sorted(prob_candidate_pairs, reverse=True)[0:5]
+        prob_candidate_pairs = sorted(prob_candidate_pairs, reverse=True)[0:10]
         return prob_candidate_pairs
 
     def score(self, query):

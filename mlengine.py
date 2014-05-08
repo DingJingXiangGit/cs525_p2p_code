@@ -34,7 +34,7 @@ class MLEngine:
 
     def get_candidates(self, my_team, their_team):
         '''Returns a list of hero IDs to consider for recommending.'''
-        ids = [i for i in hero_ids if i not in my_team and i not in their_team and i not in [24, 104, 105, 108]]
+        ids = [i for i in hero_ids if i not in my_team and i not in their_team and i not in [24, 105, 108]]
         return ids
 
     def recommend(self, my_team, their_team, human_readable=False):

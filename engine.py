@@ -4,8 +4,8 @@ from random import randint
 from logistic_regression import D2LogisticRegression
 from mlengine import MLEngine
 from socket import *
-import json
 import threading
+import json
 import zmq
 import sys
 
@@ -18,6 +18,30 @@ RETRY_TIMES = 5
 
 
 
+class Task:
+	def __init__(self, request, socket, addr):
+		print(request)
+		self.radiant = request["radiant"]
+		self.dire = request["dire"]
+		self.socket = socket
+		self.addr = addr
+		self.camp = request["camp"]
+		self.counter = 2
+		self.result = []
+		self.mutex = threading.Lock()
+		self.request = request
+
+	def consume(self, entries):
+		self.mutex.acquire()
+		self.result.extend(entries)
+		self.counter -= 1
+		print("counter = "+str(self.counter))
+		self.mutex.release()
+
+	def finished(self):
+		return self.counter == 0
+
+
 
 class TaskHandler:
 	def __init__(self):
@@ -26,6 +50,15 @@ class TaskHandler:
 		self.socket_table = {}
 		self.poller = zmq.Poller()
 		self.initialize_connections()
+
+
+		self.task_sema = threading.Semaphore(0)
+		self.task_mutex = threading.Lock()
+		self.predictor = MLEngine(D2LogisticRegression())
+		self.broadcast_thread = threading.Thread(target=self.start_process, args = ())
+		self.broadcast_thread.start()
+		
+
 
 	def initialize_connections(self):
 		context = zmq.Context()
@@ -36,14 +69,48 @@ class TaskHandler:
 			self.poller.register(socket_item, zmq.POLLIN)
 			self.socket_table[peer.id] = socket_item
 
-	def send_request(self, request):
+	def join(self):
+		self.broadcast_thread.join()
+
+	def launch_task(self, task):
+		print("launch task.")
+		self.current_task = task
+		self.task_sema.release()
+
+		local_result = self.predictor.recommend(task.radiant, task.dire)
+		self.current_task.consume(local_result)
+		self.check_and_done()
+
+	def check_and_done(self):
+		self.task_mutex.acquire()
+		if self.current_task != None and self.current_task.finished():
+			#recommendations = self.recommender.recommend(command["radiant"], command["dire"]);
+			result = self.process_responses(self.current_task.result)
+			json_str = json.dumps(result);
+			self.current_task.socket.sendto(json_str.encode("utf-8"), self.current_task.addr)
+			print("response message:"+json_str)
+			self.current_task = None
+
+		self.task_mutex.release()
+
+	def process_responses(self,responses):
+		result = {}
+		result["candidates"] = []
+
+		print("process_response: \t"+json.dumps(responses))
+		for i in range(len(responses)):
+			result["candidates"].append({"heroId": responses[i][1], "rate":responses[i][0]})
+		return result
+
+	def start_process(self):
+		self.task_sema.acquire()
+		print("process task.")
 		for pid in self.socket_table:
 			socket = self.socket_table[pid]
-			message = json.dumps(request)
+			message = json.dumps(self.current_task.request)
 			print("send message to {} {}", pid, message)
 			socket.send_string(message)
 
-		
 		result = []
 		active_entry = []
 		for count in range(RETRY_TIMES):
@@ -56,7 +123,8 @@ class TaskHandler:
 						message = message.decode("utf-8")
 						element = json.loads(message)
 						active_entry.append({"ip":element["ip"], "port":element["port"]})
-						result.append(json.loads(message))
+						print(message)
+						result.extend(element["candidates"])
 
 			if len(result) >= 5:
 				break
@@ -83,26 +151,30 @@ class TaskHandler:
 
 		# return result
 		print("peers size ", len(self.peers))
-		print("receive message len: {}".format(len(result)))
+		print("remote resulting message {}".format(json.dumps(result)))
+		self.current_task.consume(result)
+		self.check_and_done()
 		return result
 
 
 
 class Engine:
 	def __init__(self, local_ip, local_port, remote_ip, remote_port):
-		self.task_handler = TaskHandler()
 		self.recommender = MLEngine(D2LogisticRegression())
 		self.local_ip = local_ip
 		self.local_port = local_port
 		self.remote_ip = remote_ip
 		self.remote_port = remote_port
 
+		self.task_handler = TaskHandler()
 		self.client_thread = threading.Thread(target=self.start_task_creator, args = ())
-		#self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
+		self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
 		self.client_thread.start()
-		#self.remote_thread.start()
+		self.remote_thread.start()
+
 		self.client_thread.join()
-		#self.remote_thread.join()
+		self.remote_thread.join()
+		self.task_handler.join()
 
 
 	def start_task_creator(self):
@@ -110,24 +182,16 @@ class Engine:
 		server_socket = socket(AF_INET, SOCK_DGRAM)
 		server_socket.bind(address)
 		while True:
+			print("root receive new task [start]")
 			content, addr = server_socket.recvfrom(2048)
-			task = json.loads(content.decode("utf-8"));
-			#responses = self.task_handler.send_request(request)
-			recommendations = self.recommender.recommend(task["radiant"], task["dire"]);
-
-			result = self.process_responses(recommendations)
-			json_str = json.dumps(result);
-			server_socket.sendto(json_str.encode("utf-8"), addr)
-
+			print("root:"+content.decode("utf-8"))
+			command = json.loads(content.decode("utf-8"))
+			responses = self.task_handler.launch_task(Task(command, server_socket, addr))
+			print("root receive new task [end]")
 			#server_socket.sendto("hello c#".encode("utf-8"), addr)
 
-
-
-	def process_responses(self,responses):
-		return responses
-
 	def process_request(self, request):
-		return self.recommender.suggest(request)
+		return self.recommender.recommend(request["radiant"], request["dire"])
 
 	def start_remote_handler(self):
 		url = REMOTE_HANDLER_URL_FORMAT.format(self.remote_ip, self.remote_port)
@@ -140,13 +204,11 @@ class Engine:
 			message = message.decode("utf-8")
 			print("receive remote request: {}",message)
 			request = json.loads(message)
-			result["suggestion"] = self.process_request(request)
+			result["candidates"] = self.process_request(request)
 			result["ip"] = self.remote_ip
 			result["port"] = self.remote_port
-			print("presend")
 			socket.send_string(json.dumps(result))
-			print("send remote request: {}",json.dumps(result))
-
+			print("send remote response: {}",json.dumps(result))
 
 
 
