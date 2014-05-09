@@ -155,8 +155,11 @@ class TaskHandler:
 		if DBGMODE : print("launch_task [start]")
 		self.current_task = task
 		self.task_sema.release()
+		if task.camp == 0:
+			local_result = self.predictor.recommend(task.radiant, task.dire)
+		else:
+			local_result = self.predictor.recommend(task.dire, task.radiant)
 
-		local_result = self.predictor.recommend(task.radiant, task.dire)
 		self.current_task.consume(local_result)
 		self.check_and_done()
 		if DBGMODE : print("launch_task [end]")
@@ -274,14 +277,22 @@ class Engine:
 		while True:
 			print("root receive new task [start]")
 			content, addr = server_socket.recvfrom(2048)
-			print("root:"+content.decode("utf-8"))
+			
 			command = json.loads(content.decode("utf-8"))
+			radiant = [i for i in command["radiant"] if i != -1 and i!=77]
+			dire = [i for i in command["dire"] if i != -1 and i!=77]
+			command["dire"] = dire
+			command["radiant"] = radiant
+
 			responses = self.task_handler.launch_task(Task(command, server_socket, addr))
 			print("root receive new task [end]")
 			#server_socket.sendto("hello c#".encode("utf-8"), addr)
 
 	def process_request(self, request):
-		return self.recommender.recommend(request["radiant"], request["dire"])
+		if request["camp"] == 0:
+			return self.recommender.recommend(request["radiant"], request["dire"])
+		else:
+			return self.recommender.recommend(request["dire"], request["radiant"])
 
 	def start_remote_handler(self):
 		url = REMOTE_HANDLER_URL_FORMAT.format(self.remote_ip, self.remote_port)
