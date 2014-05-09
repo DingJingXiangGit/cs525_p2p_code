@@ -32,24 +32,54 @@ class ModelLoader:
 		return {"status": status, "model": model}
 
 class HeartBeat:
-	def __init__(self, baseURL):
+	def __init__(self, baseURL, remote_ip, remote_port):
 		self.url = baseURL
 		self.period = 1;
 		self.thread = threading.Timer(self.period, self.report)
 		self.thread.daemon = True
+		self.remote_ip = remote_ip
+		self.remote_port = remote_port
 
 	def report(self):
-		print("start report")
-		params = urllib.parse.urlencode({'ip': '127.0.0.1', 'port': '8100'})
-		headers = {"Content-type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
-		conn = http.client.HTTPConnection(self.url)
-		conn.request("POST", "/heartbeat", params, headers)
+		try:
+			params = urllib.parse.urlencode({'ip': self.remote_ip, 'port': self.remote_port})
+			headers = {"Content-type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
+			conn = http.client.HTTPConnection(self.url)
+			conn.request("POST", "/heartbeat", params, headers)
+			res = conn.getresponse()
+			content = res.read()
 
-		res = conn.getresponse()
-		conn.close()
-		print("end report:"+params)
+			content = json.loads(content.decode("utf-8"))
+			peers = content["peers"]
+			peers = [node for node in peers if node["ip"] != self.remote_ip or node["port"] != self.remote_port]
+			conn.close()
+		except:
+			pass
+		
+		self.update_database(peers)
 		self.thread = threading.Timer(self.period, self.report)
 		self.thread.start()
+
+	def update_database(self, peers):
+		DataStore.mutex.acquire()
+		database_conn = DataStore()
+		current_nodes = database_conn.get_all_peers()
+		new_list = []
+		for peer in peers:
+			overlay = False
+			for node in current_nodes:
+				if node.ip == peer["ip"] and node.port == peer["port"]:
+					if node.rating < 30:
+						node.rating = 30
+					database_conn.update(node)
+					overlay = True
+
+			if overlay == False:
+				new_list.append(PeerNode(peer["id"], peer["ip"], peer["port"], 30))
+		database_conn.insert_peers(new_list)
+		database_conn.close()
+		DataStore.mutex.release()
+
 
 	def start(self):
 		self.thread.start()
@@ -84,13 +114,11 @@ class Task:
 
 
 class TaskHandler:
+	PEER_REPICK = 3
 	def __init__(self):
-		self.datastore = DataStore()
-		self.peers = self.datastore.get_highest_rating(2)
 		self.socket_table = {}
 		self.poller = zmq.Poller()
-		self.initialize_connections()
-
+		#self.initialize_connections()
 		self.task_sema = threading.Semaphore(0)
 		self.task_mutex = threading.Lock()
 		self.predictor = MLEngine(D2LogisticRegression())
@@ -98,15 +126,22 @@ class TaskHandler:
 		self.broadcast_thread.start()
 		
 
-
 	def initialize_connections(self):
-		context = zmq.Context()
-		for peer in self.peers:
-			socket_item = context.socket(zmq.REQ)
-			print("connect to: tcp://{}:{}".format(peer.ip, peer.port))
-			socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
-			self.poller.register(socket_item, zmq.POLLIN)
-			self.socket_table[peer.id] = socket_item
+		if len(self.socket_table) < TaskHandler.PEER_REPICK:
+			DataStore.mutex.acquire()
+			self.datastore = DataStore()
+			self.peers = self.datastore.get_highest_rating(2)
+			context = zmq.Context()
+
+			for peer in self.peers:
+				if peer.id not in self.socket_table:
+					print("connect to: tcp://{}:{}".format(peer.ip, peer.port))
+					socket_item = context.socket(zmq.REQ)
+					socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
+					self.poller.register(socket_item, zmq.POLLIN)
+					self.socket_table[peer.id] = socket_item
+			self.datastore.close()
+			DataStore.mutex.release()
 
 	def join(self):
 		self.broadcast_thread.join()
@@ -142,6 +177,7 @@ class TaskHandler:
 		return result
 
 	def start_process(self):
+		self.initialize_connections()
 		self.task_sema.acquire()
 		print("process task.")
 		for pid in self.socket_table:
@@ -205,7 +241,7 @@ class Engine:
 		self.remote_ip = remote_ip
 		self.remote_port = remote_port
 
-		self.heart_beater = HeartBeat("127.0.0.1:8888")
+		self.heart_beater = HeartBeat("54.186.108.36:8888", remote_ip, remote_port)
 		self.task_handler = TaskHandler()
 		self.client_thread = threading.Thread(target=self.start_task_creator, args = ())
 		self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())

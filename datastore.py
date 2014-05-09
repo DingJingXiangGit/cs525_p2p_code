@@ -1,16 +1,20 @@
 import sqlite3 as lite
 from mode import PeerNode
 import sys
-
+import threading
 con = None
 CREATE_TABLE_CMD = "CREATE TABLE if not exists Peers(Id INTEGER PRIMARY KEY, Name TEXT, IP Text, Port Text, Rating Int)"
 SELECT_ALL_CMD = "SELECT * FROM Peers;"
-INSERT_CMD = "INSERT INTO Peers (Name, IP, Port, Rating) VALUES(?, ?, ?, ?)"
+INSERT_CMD = "INSERT INTO Peers (Name, IP, Port, Rating) VALUES(?, ?, ?, ?);"
+UPDATE_CMD = "UPDATE Peers SET Name=?,Rating=? where IP=?,Port=?;"
 DELETE_ALL_CMD = "DELETE FROM Peers;"
 DELETE_CMD = "DELETE FROM Peers WHERE Id = {};"
 GET_HIGHEST_RATING = "SELECT * FROM Peers ORDER BY Rating DESC LIMIT {};"
 
+
+
 class DataStore:
+	mutex = threading.Lock()
 	def __init__(self):
 		self.con = lite.connect('./cs525.db')
 		with self.con:
@@ -37,6 +41,11 @@ class DataStore:
 				cursor.execute(INSERT_CMD, [node.name, node.ip, node.port, node.rating])
 				node.id = cursor.lastrowid
 
+	def update(self, node):
+		with self.con:
+			cursor = self.con.cursor()
+			cursor.execute(UPDATE_CMD, [node.name, node.rating, node.ip, node.port])
+
 	def delete(self, node):
 		with self.con:
 			cursor = self.con.cursor()
@@ -60,6 +69,9 @@ class DataStore:
 				peer_nodes.append(PeerNode(row[0], row[1], row[2], row[3],row[4]))
 
 		return peer_nodes
+
+	def close(self):
+		self.con.close()
 
 
 if __name__ == "__main__":
