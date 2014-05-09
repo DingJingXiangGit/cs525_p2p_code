@@ -120,11 +120,13 @@ class Task:
 
 class TaskHandler:
 	PEER_REPICK = 5
-	def __init__(self):
+	def __init__(self, remote_ip, remote_port):
 		self.udp_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket_table = {}
-		self.poller = zmq.Poller()
+		#self.poller = zmq.Poller()
 		#self.initialize_connections()
+		self.remote_ip = remote_ip
+		self.remote_port = remote_port
 		self.task_sema = threading.Semaphore(0)
 		self.task_mutex = threading.Lock()
 		self.predictor = MLEngine(D2LogisticRegression())
@@ -138,7 +140,7 @@ class TaskHandler:
 			self.datastore = DataStore()
 			self.peers = self.datastore.get_highest_rating(10)
 			for peer in self.peers:
-				if peer.id not in self.socket_table:
+				if peer.id not in self.socket_table and (peer.ip != self.remote_ip or peer.port !=self.remote_port):
 					self.socket_table[peer.id] = (peer.ip, int(peer.port))
 			self.datastore.close()
 			DataStore.mutex.release()
@@ -227,14 +229,18 @@ class TaskHandler:
 					self.udp_sender.settimeout(remain_time)
 					data,addr = self.udp_sender.recvfrom(4096)
 					message = data.decode("utf-8")
-					print(message)
+					print("[middle] recvfrom:"+message)
 					element = json.loads(message)
 					active_entry.append({"ip":element["ip"], "port":element["port"]})
 					result.extend(element["candidates"])
 					count += 1;
 					remain_time = remain_time + start_time - time.time()
-					print("[end] recvfrom remote")
-					if len(active_entry) <= count or remain_time <= 0:
+					#print("[end] recvfrom remote: counter")
+					#print("len = "+str(len(self.socket_table)))
+					#print("count = "+str(count))
+					#print("remain_time = "+str(remain_time))
+
+					if len(self.socket_table) <= count or remain_time <= 0:
 						break
 				except:
 					break
@@ -327,7 +333,7 @@ class Engine:
 		self.remote_port = remote_port
 
 		self.heart_beater = HeartBeat("54.186.108.36:8888", remote_ip, remote_port)
-		self.task_handler = TaskHandler()
+		self.task_handler = TaskHandler(remote_ip, remote_port)
 		self.client_thread = threading.Thread(target=self.start_task_creator, args = ())
 		self.remote_thread = threading.Thread(target=self.start_remote_handler, args = ())
 		self.heart_beater.start()
