@@ -75,7 +75,7 @@ class HeartBeat:
 					overlay = True
 
 			if overlay == False:
-				new_list.append(PeerNode(peer["id"], peer["ip"], peer["port"], 30))
+				new_list.append(PeerNode(0, peer["id"], peer["ip"], peer["port"], 30))
 		database_conn.insert_peers(new_list)
 		database_conn.close()
 		DataStore.mutex.release()
@@ -135,7 +135,7 @@ class TaskHandler:
 
 			for peer in self.peers:
 				if peer.id not in self.socket_table:
-					print("connect to: tcp://{}:{}".format(peer.ip, peer.port))
+					print("connect to: tcp://{}".format(peer))
 					socket_item = context.socket(zmq.REQ)
 					socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
 					self.poller.register(socket_item, zmq.POLLIN)

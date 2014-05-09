@@ -6,7 +6,7 @@ con = None
 CREATE_TABLE_CMD = "CREATE TABLE if not exists Peers(Id INTEGER PRIMARY KEY, Name TEXT, IP Text, Port Text, Rating Int)"
 SELECT_ALL_CMD = "SELECT * FROM Peers;"
 INSERT_CMD = "INSERT INTO Peers (Name, IP, Port, Rating) VALUES(?, ?, ?, ?);"
-UPDATE_CMD = "UPDATE Peers SET Name=?,Rating=? where IP=?,Port=?;"
+UPDATE_CMD = "UPDATE Peers SET Name=?,Rating=? where IP=? and Port=?;"
 DELETE_ALL_CMD = "DELETE FROM Peers;"
 DELETE_CMD = "DELETE FROM Peers WHERE Id = {};"
 GET_HIGHEST_RATING = "SELECT * FROM Peers ORDER BY Rating DESC LIMIT {};"
