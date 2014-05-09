@@ -34,7 +34,7 @@ class DataStore:
 		return peer_nodes
 
 	def insert_peers(self, node_list):
-		print (self.con)
+		#print (self.con)
 		with self.con:
 			for node in node_list:
 				cursor = self.con.cursor()

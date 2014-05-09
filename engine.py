@@ -14,6 +14,7 @@ REMOTE_HANDLER_URL = "tcp://*:5557"
 REMOTE_HANDLER_URL_FORMAT = "tcp://{}:{}"
 TIME_BOUND = 1000
 RETRY_TIMES = 5
+DBGMODE = True
 
 class ModelLoader:
 	def __init__(self, baseURL):
@@ -34,7 +35,7 @@ class ModelLoader:
 class HeartBeat:
 	def __init__(self, baseURL, remote_ip, remote_port):
 		self.url = baseURL
-		self.period = 1;
+		self.period = 100;
 		self.thread = threading.Timer(self.period, self.report)
 		self.thread.daemon = True
 		self.remote_ip = remote_ip
@@ -103,11 +104,12 @@ class Task:
 		self.request = request
 
 	def consume(self, entries):
+		print("[start] consume = "+str(self.counter))
 		self.mutex.acquire()
 		self.result.extend(entries)
 		self.counter -= 1
-		print("counter = "+str(self.counter))
 		self.mutex.release()
+		print("[end] consume = "+str(self.counter))
 
 	def finished(self):
 		return self.counter == 0
@@ -129,6 +131,7 @@ class TaskHandler:
 
 	def initialize_connections(self):
 		if len(self.socket_table) < TaskHandler.PEER_REPICK:
+			if DBGMODE : print("initialize_connections [start]")
 			DataStore.mutex.acquire()
 			self.datastore = DataStore()
 			self.peers = self.datastore.get_highest_rating(2)
@@ -136,27 +139,30 @@ class TaskHandler:
 
 			for peer in self.peers:
 				if peer.id not in self.socket_table:
-					print("connect to: tcp://{}".format(peer))
+					#print("connect to: tcp://{}".format(peer))
 					socket_item = context.socket(zmq.REQ)
 					socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
 					self.poller.register(socket_item, zmq.POLLIN)
 					self.socket_table[peer.id] = socket_item
 			self.datastore.close()
 			DataStore.mutex.release()
+			print("initialize_connections [end]")
 
 	def join(self):
 		self.broadcast_thread.join()
 
 	def launch_task(self, task):
-		print("launch task.")
+		if DBGMODE : print("launch_task [start]")
 		self.current_task = task
 		self.task_sema.release()
 
 		local_result = self.predictor.recommend(task.radiant, task.dire)
 		self.current_task.consume(local_result)
 		self.check_and_done()
+		if DBGMODE : print("launch_task [end]")
 
 	def check_and_done(self):
+		if DBGMODE : print("check_and_done [start]")
 		self.task_mutex.acquire()
 		if self.current_task != None and self.current_task.finished():
 			#recommendations = self.recommender.recommend(command["radiant"], command["dire"]);
@@ -167,71 +173,75 @@ class TaskHandler:
 			self.current_task = None
 
 		self.task_mutex.release()
+		if DBGMODE : print("check_and_done [end]")
 
 	def process_responses(self,responses):
+		if DBGMODE : print("process_responses [start]")
 		result = {}
 		result["candidates"] = []
-
 		print("process_response: \t"+json.dumps(responses))
 		for i in range(len(responses)):
 			result["candidates"].append({"heroId": responses[i][1], "rate":responses[i][0]})
+		if DBGMODE : print("process_responses [end]")
 		return result
 
 	def start_process(self):
-		self.initialize_connections()
-		print("pre start process task.")
-		self.task_sema.acquire()
-		print("real process task.")
-		for pid in self.socket_table:
-			socket = self.socket_table[pid]
-			message = json.dumps(self.current_task.request)
-			print("send message to {} {}", pid, message)
-			socket.send_string(message)
+		while True:
+			self.initialize_connections()
+			if DBGMODE : print("pre start process task.")
+			self.task_sema.acquire()
+			if DBGMODE : print("real process task.")
+			for pid in self.socket_table:
+				socket = self.socket_table[pid]
+				message = json.dumps(self.current_task.request)
+				print("send message to {} {}".format(pid, message))
+				socket.send_string(message)
 
-		result = []
-		active_entry = []
-		for count in range(RETRY_TIMES):
-			socks = dict(self.poller.poll(TIME_BOUND))
-			if socks:
-				for socket_item in socks:
-					if socks[socket_item] == zmq.POLLIN:
-						print("sid = {}", socket_item)
-						message = socket_item.recv()
-						message = message.decode("utf-8")
-						element = json.loads(message)
-						active_entry.append({"ip":element["ip"], "port":element["port"]})
-						print(message)
-						result.extend(element["candidates"])
+			result = []
+			active_entry = []
+			for count in range(RETRY_TIMES):
+				socks = dict(self.poller.poll(TIME_BOUND))
+				if socks:
+					for socket_item in socks:
+						if socks[socket_item] == zmq.POLLIN:
+							print("sid = {}", socket_item)
+							message = socket_item.recv()
+							message = message.decode("utf-8")
+							element = json.loads(message)
+							active_entry.append({"ip":element["ip"], "port":element["port"]})
+							print(message)
+							result.extend(element["candidates"])
 
-			if len(result) >= 5:
-				break
-
-
-		# delete dead peers[start]
-		dead_list = []
-		for peer  in self.peers:
-			active  = False
-			for entry in active_entry:
-				if peer.ip == entry["ip"] and peer.port == entry["port"]:
-					active = True
-				if not active:
-					dead_list.append(peer.id)
-
-		for pid in dead_list:
-			self.poller.unregister(self.socket_table[pid])
-			self.socket_table[pid].close()
-			self.socket_table.pop(pid, None)
-
-		self.peers = [peer for peer in self.peers if peer.id not in dead_list]
-		# delete dead peers[end]
+				if len(result) >= 5:
+					break
 
 
-		# return result
-		print("peers size ", len(self.peers))
-		print("remote resulting message {}".format(json.dumps(result)))
-		self.current_task.consume(result)
-		self.check_and_done()
-		return result
+			# delete dead peers[start]
+			dead_list = []
+			for peer  in self.peers:
+				active  = False
+				for entry in active_entry:
+					if peer.ip == entry["ip"] and peer.port == entry["port"]:
+						active = True
+					if not active:
+						dead_list.append(peer.id)
+
+			for pid in dead_list:
+				self.poller.unregister(self.socket_table[pid])
+				print("close pid: "+pid)
+				self.socket_table[pid].close()
+				self.socket_table.pop(pid, None)
+
+			self.peers = [peer for peer in self.peers if peer.id not in dead_list]
+			# delete dead peers[end]
+
+
+			# return result
+			print("peers size ", len(self.peers))
+			print("remote resulting message {}".format(json.dumps(result)))
+			self.current_task.consume(result)
+			self.check_and_done()
+		#return result
 
 
 
