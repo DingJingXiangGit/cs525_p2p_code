@@ -41,6 +41,7 @@ class HeartBeat:
 		self.remote_port = remote_port
 
 	def report(self):
+		peers = []
 		try:
 			params = urllib.parse.urlencode({'ip': self.remote_ip, 'port': self.remote_port})
 			headers = {"Content-type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
@@ -178,8 +179,9 @@ class TaskHandler:
 
 	def start_process(self):
 		self.initialize_connections()
+		print("pre start process task.")
 		self.task_sema.acquire()
-		print("process task.")
+		print("real process task.")
 		for pid in self.socket_table:
 			socket = self.socket_table[pid]
 			message = json.dumps(self.current_task.request)
