@@ -3,7 +3,9 @@ from mode import PeerNode
 from random import randint
 from logistic_regression import D2LogisticRegression
 from mlengine import MLEngine
-from socket import *
+#from socket import *
+import socket
+import time
 import threading
 import json, zmq, sys
 import pickle, http.client, urllib.parse
@@ -12,8 +14,8 @@ Local_URL = "tcp://127.0.0.1:5556"
 Local_URL_FORMAT = "tcp://{}:{}"
 REMOTE_HANDLER_URL = "tcp://*:5557"
 REMOTE_HANDLER_URL_FORMAT = "tcp://{}:{}"
-TIME_BOUND = 1000
-RETRY_TIMES = 5
+TIME_BOUND = 1
+RETRY_TIMES = 2
 DBGMODE = True
 
 class ModelLoader:
@@ -35,7 +37,7 @@ class ModelLoader:
 class HeartBeat:
 	def __init__(self, baseURL, remote_ip, remote_port):
 		self.url = baseURL
-		self.period = 100;
+		self.period = 2;
 		self.thread = threading.Timer(self.period, self.report)
 		self.thread.daemon = True
 		self.remote_ip = remote_ip
@@ -117,8 +119,9 @@ class Task:
 
 
 class TaskHandler:
-	PEER_REPICK = 3
+	PEER_REPICK = 5
 	def __init__(self):
+		self.udp_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket_table = {}
 		self.poller = zmq.Poller()
 		#self.initialize_connections()
@@ -128,25 +131,36 @@ class TaskHandler:
 		self.broadcast_thread = threading.Thread(target=self.start_process, args = ())
 		self.broadcast_thread.start()
 		
-
 	def initialize_connections(self):
 		if len(self.socket_table) < TaskHandler.PEER_REPICK:
 			if DBGMODE : print("initialize_connections [start]")
 			DataStore.mutex.acquire()
 			self.datastore = DataStore()
-			self.peers = self.datastore.get_highest_rating(2)
-			context = zmq.Context()
-
+			self.peers = self.datastore.get_highest_rating(10)
 			for peer in self.peers:
 				if peer.id not in self.socket_table:
-					#print("connect to: tcp://{}".format(peer))
-					socket_item = context.socket(zmq.REQ)
-					socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
-					self.poller.register(socket_item, zmq.POLLIN)
-					self.socket_table[peer.id] = socket_item
+					self.socket_table[peer.id] = (peer.ip, int(peer.port))
 			self.datastore.close()
 			DataStore.mutex.release()
-			print("initialize_connections [end]")
+
+	# def initialize_connections(self):
+	# 	if len(self.socket_table) < TaskHandler.PEER_REPICK:
+	# 		if DBGMODE : print("initialize_connections [start]")
+	# 		DataStore.mutex.acquire()
+	# 		self.datastore = DataStore()
+	# 		self.peers = self.datastore.get_highest_rating(2)
+	# 		context = zmq.Context()
+
+	# 		for peer in self.peers:
+	# 			if peer.id not in self.socket_table:
+	# 				#print("connect to: tcp://{}".format(peer))
+	# 				socket_item = context.socket(zmq.REQ)
+	# 				socket_item.connect ("tcp://{}:{}".format(peer.ip, peer.port))
+	# 				self.poller.register(socket_item, zmq.POLLIN)
+	# 				self.socket_table[peer.id] = socket_item
+	# 		self.datastore.close()
+	# 		DataStore.mutex.release()
+	# 		print("initialize_connections [end]")
 
 	def join(self):
 		self.broadcast_thread.join()
@@ -195,31 +209,36 @@ class TaskHandler:
 			self.task_sema.acquire()
 			if DBGMODE : print("real process task.")
 			for pid in self.socket_table:
-				socket = self.socket_table[pid]
+				target = self.socket_table[pid]
 				message = json.dumps(self.current_task.request)
-				print("send message to {} {}".format(pid, message))
-				socket.send_string(message)
+				print(target)
+				self.udp_sender.sendto(message.encode("utf-8"), target)
 
 			result = []
 			active_entry = []
-			for count in range(RETRY_TIMES):
-				socks = dict(self.poller.poll(TIME_BOUND))
-				if socks:
-					for socket_item in socks:
-						if socks[socket_item] == zmq.POLLIN:
-							print("sid = {}", socket_item)
-							message = socket_item.recv()
-							message = message.decode("utf-8")
-							element = json.loads(message)
-							active_entry.append({"ip":element["ip"], "port":element["port"]})
-							print(message)
-							result.extend(element["candidates"])
-
-				if len(result) >= 5:
+			remain_time = RETRY_TIMES*TIME_BOUND
+			start_time = time.time()
+			count = 0;
+			print("remain tiem is:"+str(remain_time))
+			#for count in range(RETRY_TIMES):
+			while True:
+				try:
+					print("[start] recvfrom remote")
+					self.udp_sender.settimeout(remain_time)
+					data,addr = self.udp_sender.recvfrom(4096)
+					message = data.decode("utf-8")
+					print(message)
+					element = json.loads(message)
+					active_entry.append({"ip":element["ip"], "port":element["port"]})
+					result.extend(element["candidates"])
+					count += 1;
+					remain_time = remain_time + start_time - time.time()
+					print("[end] recvfrom remote")
+					if len(active_entry) <= count or remain_time <= 0:
+						break
+				except:
 					break
 
-
-			# delete dead peers[start]
 			dead_list = []
 			for peer  in self.peers:
 				active  = False
@@ -230,21 +249,72 @@ class TaskHandler:
 						dead_list.append(peer.id)
 
 			for pid in dead_list:
-				self.poller.unregister(self.socket_table[pid])
-				print("close pid: "+pid)
-				self.socket_table[pid].close()
+				#self.poller.unregister(self.socket_table[pid])
+				print("close pid: "+str(pid))
+				#self.socket_table[pid].close()
 				self.socket_table.pop(pid, None)
-
+			
 			self.peers = [peer for peer in self.peers if peer.id not in dead_list]
+
 			# delete dead peers[end]
-
-
-			# return result
 			print("peers size ", len(self.peers))
 			print("remote resulting message {}".format(json.dumps(result)))
 			self.current_task.consume(result)
 			self.check_and_done()
-		#return result
+
+	# def start_process(self):
+	# 	while True:
+	# 		self.initialize_connections()
+	# 		if DBGMODE : print("pre start process task.")
+	# 		self.task_sema.acquire()
+	# 		if DBGMODE : print("real process task.")
+	# 		for pid in self.socket_table:
+	# 			socket = self.socket_table[pid]
+	# 			message = json.dumps(self.current_task.request)
+	# 			print("send message to {} {}".format(pid, message))
+	# 			socket.send_string(message)
+
+	# 		result = []
+	# 		active_entry = []
+	# 		for count in range(RETRY_TIMES):
+	# 			socks = dict(self.poller.poll(TIME_BOUND))
+	# 			if socks:
+	# 				for socket_item in socks:
+	# 					if socks[socket_item] == zmq.POLLIN:
+	# 						print("sid = {}", socket_item)
+	# 						message = socket_item.recv()
+	# 						message = message.decode("utf-8")
+	# 						element = json.loads(message)
+	# 						active_entry.append({"ip":element["ip"], "port":element["port"]})
+	# 						print(message)
+	# 						result.extend(element["candidates"])
+
+	# 			if len(result) >= 5:
+	# 				break
+
+
+	# 		# delete dead peers[start]
+	# 		dead_list = []
+	# 		for peer  in self.peers:
+	# 			active  = False
+	# 			for entry in active_entry:
+	# 				if peer.ip == entry["ip"] and peer.port == entry["port"]:
+	# 					active = True
+	# 				if not active:
+	# 					dead_list.append(peer.id)
+
+	# 		for pid in dead_list:
+	# 			self.poller.unregister(self.socket_table[pid])
+	# 			print("close pid: "+pid)
+	# 			self.socket_table[pid].close()
+	# 			self.socket_table.pop(pid, None)
+
+	# 		self.peers = [peer for peer in self.peers if peer.id not in dead_list]
+	# 		# delete dead peers[end]
+	# 		print("peers size ", len(self.peers))
+	# 		print("remote resulting message {}".format(json.dumps(result)))
+	# 		self.current_task.consume(result)
+	# 		self.check_and_done()
 
 
 
@@ -272,7 +342,7 @@ class Engine:
 
 	def start_task_creator(self):
 		address = (self.local_ip, int(self.local_port))
-		server_socket = socket(AF_INET, SOCK_DGRAM)
+		server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		server_socket.bind(address)
 		while True:
 			print("root receive new task [start]")
@@ -295,21 +365,35 @@ class Engine:
 			return self.recommender.recommend(request["dire"], request["radiant"])
 
 	def start_remote_handler(self):
-		url = REMOTE_HANDLER_URL_FORMAT.format(self.remote_ip, self.remote_port)
-		context = zmq.Context()
-		socket = context.socket(zmq.REP)
-		socket.bind(url)
+		sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM) # UDP
+		sock.bind((self.remote_ip, int(self.remote_port)))
 		result = {}
 		while True:
-			message = socket.recv()
-			message = message.decode("utf-8")
+			data, addr = sock.recvfrom(4096)
+			message = data.decode("utf-8")
 			print("receive remote request: {}",message)
 			request = json.loads(message)
 			result["candidates"] = self.process_request(request)
 			result["ip"] = self.remote_ip
 			result["port"] = self.remote_port
-			socket.send_string(json.dumps(result))
+			sock.sendto(json.dumps(result).encode("utf-8"), addr)
 			print("send remote response: {}",json.dumps(result))
+	#def start_remote_handler(self):
+	#	url = REMOTE_HANDLER_URL_FORMAT.format(self.remote_ip, self.remote_port)
+	#	context = zmq.Context()
+	#	socket = context.socket(zmq.REP)
+	#	socket.bind(url)
+	#	result = {}
+	#	while True:
+	#		message = socket.recv()
+	#		message = message.decode("utf-8")
+	#		print("receive remote request: {}",message)
+	#		request = json.loads(message)
+	#		result["candidates"] = self.process_request(request)
+	#		result["ip"] = self.remote_ip
+	#		result["port"] = self.remote_port
+	#		socket.send_string(json.dumps(result))
+	#		print("send remote response: {}",json.dumps(result))
 
 
 
